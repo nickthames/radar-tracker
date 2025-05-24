@@ -1,899 +1,398 @@
-<script type="text/javascript">
-        var gk_isXlsx = false;
-        var gk_xlsxFileLookup = {};
-        var gk_fileData = {};
-        function filledCell(cell) {
-          return cell !== '' && cell != null;
-        }
-        function loadFileData(filename) {
-        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
-            try {
-                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
-                var firstSheetName = workbook.SheetNames[0];
-                var worksheet = workbook.Sheets[firstSheetName];
+<!DOCTYPE html>
+     <html lang="en">
+     <head>
+       <meta charset="UTF-8">
+       <meta name="viewport" content="width=device-width, initial-scale=1.0">
+       <title>Radar Tracker</title>
+       <script src="https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js"></script>
+       <script src="https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+       <script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.25.6/babel.min.js"></script>
+       <script src="https://cdn.tailwindcss.com"></script>
+     </head>
+     <body class="bg-gray-100">
+       <div id="root"></div>
+       <script type="text/babel">
+         const { useState, useEffect } = React;
 
-                // Convert sheet to JSON to filter blank rows
-                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
-                // Filter out blank rows (rows where all cells are empty, null, or undefined)
-                var filteredData = jsonData.filter(row => row.some(filledCell));
+         const ErrorBoundary = ({ children }) => {
+           const [error, setError] = useState(null);
+           if (error) return <div className="text-red-500 p-4">Error: {error}</div>;
+           return children;
+         };
 
-                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
-                var headerRowIndex = filteredData.findIndex((row, index) =>
-                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
-                );
-                // Fallback
-                if (headerRowIndex === -1 || headerRowIndex > 25) {
-                  headerRowIndex = 0;
-                }
+         // Netlify Function URLs
+         const READ_DATA_URL = '/.netlify/functions/readData';
+         const WRITE_DATA_URL = '/.netlify/functions/writeData';
 
-                // Convert filtered JSON back to CSV
-                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
-                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
-                return csv;
-            } catch (e) {
-                console.error(e);
-                return "";
-            }
-        }
-        return gk_fileData[filename] || "";
-        }
-        </script><!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Radar Tracker</title>
-  <script src="https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.25.6/babel.min.js"></script>
-  <script src="https://cdn.tailwindcss.com"></script>
-</head>
-<body class="bg-gray-100">
-  <div id="root"></div>
-  <script type="text/babel">
-    const { useState, useEffect } = React;
+         // Utility to fetch data via Netlify Function
+         async function fetchData(sheet) {
+           try {
+             const response = await fetch(READ_DATA_URL, {
+               method: 'POST',
+               body: JSON.stringify({ sheet }),
+               headers: { 'Content-Type': 'application/json' },
+             });
+             if (!response.ok) {
+               const errorText = await response.text();
+               throw new Error(`Failed to fetch data: ${response.status} - ${errorText}`);
+             }
+             const data = await response.json();
+             return data;
+           } catch (err) {
+             console.error('Error fetching data:', err);
+             throw new Error(`Error fetching ${sheet}: ${err.message}`);
+           }
+         }
 
-    const ErrorBoundary = ({ children }) => {
-      const [error, setError] = useState(null);
-      if (error) return <div className="text-red-500 p-4">Error: {error}</div>;
-      return children;
-    };
+         // Utility to write data via Netlify Function
+         async function writeData(sheet, data, retries = 3, delay = 1000) {
+           let lastError = null;
+           for (let attempt = 1; attempt <= retries; attempt++) {
+             try {
+               const response = await fetch(WRITE_DATA_URL, {
+                 method: 'POST',
+                 body: JSON.stringify({ sheet, data }),
+                 headers: { 'Content-Type': 'application/json' },
+               });
+               if (!response.ok) {
+                 const errorText = await response.text();
+                 throw new Error(`HTTP error ${response.status}: ${response.statusText} - ${errorText}`);
+               }
+               const result = await response.json();
+               console.log(`Write to ${sheet} response (attempt ${attempt}):`, result);
+               if (result.status !== 'success') {
+                 throw new Error(`Failed to write to sheet: ${result.message || 'Unknown error'}`);
+               }
+               return result;
+             } catch (err) {
+               lastError = err;
+               console.error(`Attempt ${attempt} failed for ${sheet}:`, err.message);
+               if (attempt === retries) {
+                 throw new Error(`Failed to write to ${sheet} after ${retries} attempts: ${err.message}`);
+               }
+               await new Promise(resolve => setTimeout(resolve, delay));
+             }
+           }
+           throw lastError;
+         }
 
-    // Netlify Function URLs
-const READ_DATA_URL = '/.netlify/functions/readData';
-const WRITE_DATA_URL = '/.netlify/functions/writeData';
+         const HomePage = ({ setDirector, directors, setDirectors, setError }) => {
+           const [showAddDirector, setShowAddDirector] = useState(false);
+           const [newDirector, setNewDirector] = useState('');
+           const [selectedValue, setSelectedValue] = useState('');
 
-    // Utility to fetch data via Netlify Function
-    async function fetchData(sheet) {
-      try {
-        const response = await fetch(READ_DATA_URL, {
-          method: 'POST',
-          body: JSON.stringify({ sheet }),
-          headers: { 'Content-Type': 'application/json' },
-        });
-        if (!response.ok) {
-          const errorText = await response.text();
-          throw new Error(`Failed to fetch data: ${response.status} - ${errorText}`);
-        }
-        const data = await response.json();
-        return data;
-      } catch (err) {
-        console.error('Error fetching data:', err);
-        throw new Error(`Error fetching ${sheet}: ${err.message}`);
-      }
-    }
+           const addDirector = async () => {
+             try {
+               if (newDirector && !directors.includes(newDirector)) {
+                 const updatedDirectors = [...directors, newDirector];
+                 await writeData('Directors', updatedDirectors);
+                 setDirectors(updatedDirectors);
+                 setNewDirector('');
+                 setShowAddDirector(false);
+               }
+             } catch (err) {
+               console.error('Error in addDirector:', err);
+               setError('Error adding director: ' + err.message);
+             }
+           };
 
-    // Utility to write data via Netlify Function
-    async function writeData(sheet, data, retries = 3, delay = 1000) {
-      let lastError = null;
-      for (let attempt = 1; attempt <= retries; attempt++) {
-        try {
-          const response = await fetch(WRITE_DATA_URL, {
-            method: 'POST',
-            body: JSON.stringify({ sheet, data }),
-            headers: { 'Content-Type': 'application/json' },
-          });
-          if (!response.ok) {
-            const errorText = await response.text();
-            throw new Error(`HTTP error ${response.status}: ${response.statusText} - ${errorText}`);
-          }
-          const result = await response.json();
-          console.log(`Write to ${sheet} response (attempt ${attempt}):`, result);
-          if (result.status !== 'success') {
-            throw new Error(`Failed to write to sheet: ${result.message || 'Unknown error'}`);
-          }
-          return result;
-        } catch (err) {
-          lastError = err;
-          console.error(`Attempt ${attempt} failed for ${sheet}:`, err.message);
-          if (attempt === retries) {
-            throw new Error(`Failed to write to ${sheet} after ${retries} attempts: ${err.message}`);
-          }
-          await new Promise(resolve => setTimeout(resolve, delay));
-        }
-      }
-      throw lastError;
-    }
+           return (
+             <div className="min-h-screen flex flex-col items-center justify-center">
+               <h1 className="text-3xl font-bold mb-6">Radar Tracker</h1>
+               <select
+                 value={selectedValue}
+                 className="border border-gray-300 p-2 mb-4 w-64 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white text-gray-900"
+                 onChange={(e) => {
+                   console.log('Director selected:', e.target.value);
+                   setSelectedValue(e.target.value);
+                   if (e.target.value === 'add') {
+                     setShowAddDirector(true);
+                   } else {
+                     setDirector(e.target.value);
+                   }
+                 }}
+               >
+                 <option value="" disabled className="text-gray-500">Select Director</option>
+                 {directors.length > 0 ? (
+                   directors.map((dir) => (
+                     <option key={dir} value={dir}>{dir}</option>
+                   ))
+                 ) : (
+                   <option value="" disabled>No directors available</option>
+                 )}
+                 <option value="add">Add New Director</option>
+               </select>
+               {showAddDirector && (
+                 <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center">
+                   <div className="bg-white p-6 rounded shadow-lg">
+                     <h2 className="text-xl font-bold mb-4">Add Director</h2>
+                     <input
+                       type="text"
+                       value={newDirector}
+                       onChange={(e) => {
+                         console.log('New Director Input:', e.target.value);
+                         setNewDirector(e.target.value);
+                       }}
+                       placeholder="Director Name"
+                       className="border p-2 w-full mb-4 rounded-md"
+                     />
+                     <div className="flex justify-end space-x-2">
+                       <button
+                         onClick={() => {
+                           setNewDirector('');
+                           setShowAddDirector(false);
+                         }}
+                         className="bg-gray-500 text-white px-4 py-2 rounded hover:bg-gray-600"
+                       >
+                         Cancel
+                       </button>
+                       <button
+                         onClick={addDirector}
+                         className="bg-black text-white px-4 py-2 rounded hover:bg-lime-500"
+                       >
+                         Add
+                       </button>
+                     </div>
+                   </div>
+                 </div>
+               )}
+             </div>
+           );
+         };
 
-    const HomePage = ({ setDirector, directors, setDirectors, setError }) => {
-      const [showAddDirector, setShowAddDirector] = useState(false);
-      const [newDirector, setNewDirector] = useState('');
-      const [selectedValue, setSelectedValue] = useState('');
+         const DirectorPage = ({ director, setDirector, directors, setDirectors, setError }) => {
+           const [radars, setRadars] = useState([]);
+           const [usersLocations, setUsersLocations] = useState([]);
+           const [showRadars, setShowRadars] = useState(false);
+           const [newRadar, setNewRadar] = useState({ name: '', status: 'Available', userLocation: 'Unassigned' });
+           const [newUserLocation, setNewUserLocation] = useState({ name: '', type: 'Staff' });
+           const [showModal, setShowModal] = useState(false);
+           const [modalContent, setModalContent] = useState(null);
 
-      const addDirector = async () => {
-        try {
-          if (newDirector && !directors.includes(newDirector)) {
-            const updatedDirectors = [...directors, newDirector];
-            await writeData('Directors', updatedDirectors);
-            setDirectors(updatedDirectors);
-            setNewDirector('');
-            setShowAddDirector(false);
-          }
-        } catch (err) {
-          console.error('Error in addDirector:', err);
-          setError('Error adding director: ' + err.message);
-        }
-      };
+           useEffect(() => {
+             const loadData = async () => {
+               try {
+                 const loadedRadars = await fetchData('Radars');
+                 setRadars(loadedRadars);
 
-      return (
-        <div className="min-h-screen flex flex-col items-center justify-center">
-          <h1 className="text-3xl font-bold mb-6">Radar Tracker</h1>
-          <select
-            value={selectedValue}
-            className="border border-gray-300 p-2 mb-4 w-64 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white text-gray-900"
-            onChange={(e) => {
-              console.log('Director selected:', e.target.value);
-              setSelectedValue(e.target.value);
-              if (e.target.value === 'add') {
-                setShowAddDirector(true);
-              } else {
-                setDirector(e.target.value);
-              }
-            }}
-          >
-            <option value="" disabled className="text-gray-500">Select Director</option>
-            {directors.length > 0 ? (
-              directors.map((dir) => (
-                <option key={dir} value={dir}>{dir}</option>
-              ))
-            ) : (
-              <option value="" disabled>No directors available</option>
-            )}
-            <option value="add">Add New Director</option>
-          </select>
-          {showAddDirector && (
-            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center">
-              <div className="bg-white p-6 rounded shadow-lg">
-                <h2 className="text-xl font-bold mb-4">Add Director</h2>
-                <input
-                  type="text"
-                  value={newDirector}
-                  onChange={(e) => {
-                    console.log('New Director Input:', e.target.value);
-                    setNewDirector(e.target.value);
-                  }}
-                  placeholder="Director Name"
-                  className="border p-2 w-full mb-4 rounded-md"
-                />
-                <div className="flex justify-end space-x-2">
-                  <button
-                    onClick={() => {
-                      setNewDirector('');
-                      setShowAddDirector(false);
-                    }}
-                    className="bg-gray-500 text-white px-4 py-2 rounded hover:bg-gray-600"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={addDirector}
-                    className="bg-black text-white px-4 py-2 rounded hover:bg-lime-500"
-                  >
-                    Add
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      );
-    };
+                 const loadedUsersLocations = await fetchData('UsersLocations');
+                 setUsersLocations(loadedUsersLocations);
+               } catch (err) {
+                 setError(err.message);
+               }
+             };
+             loadData();
+           }, [setError]);
 
-    const DirectorPage = ({ director, setDirector, directors, setDirectors, setError }) => {
-      const [radars, setRadars] = useState([]);
-      const [usersLocations, setUsersLocations] = useState([]);
-      const [showRadars, setShowRadars] = useState(false);
-      const [newRadar, setNewRadar] = useState({ name: '', status: 'Available', userLocation: 'Unassigned' });
-      const [newUserLocation, setNewUserLocation] = useState({ name: '', type: 'Staff' });
-      const [transfer, setTransfer] = useState({ radar: '', to: '', type: '' });
-      const [showModal, setShowModal] = useState(false);
-      const [modalContent, setModalContent] = useState(null);
-      const [showDeleteDirector, setShowDeleteDirector] = useState(false);
-      const [editingRadar, setEditingRadar] = useState(null);
-      const [addUserLocationMode, setAddUserLocationMode] = useState(false);
-      const [newUserLocationInRadar, setNewUserLocationInRadar] = useState({ name: '', type: 'Staff' });
+           const addRadar = async () => {
+             try {
+               if (newRadar.name && !radars.some(r => r.name === newRadar.name && r.director === director)) {
+                 let finalUserLocation = newRadar.userLocation;
+                 const newRadarEntry = {
+                   id: Date.now(),
+                   name: newRadar.name,
+                   status: newRadar.status,
+                   userLocation: finalUserLocation,
+                   director,
+                 };
+                 const updatedRadars = [...radars, newRadarEntry];
+                 setRadars(updatedRadars);
+                 await writeData('Radars', updatedRadars);
+                 setNewRadar({ name: '', status: 'Available', userLocation: 'Unassigned' });
+                 setShowModal(false);
+               } else {
+                 alert('Radar name must be unique for this director.');
+               }
+             } catch (err) {
+               setError('Error adding radar: ' + err.message);
+             }
+           };
 
-      useEffect(() => {
-        const loadData = async () => {
-          try {
-            const loadedRadars = await fetchData('Radars');
-            setRadars(loadedRadars);
+           const openModal = (content, resetState = {}) => {
+             if (resetState.newRadar) {
+               setNewRadar({ name: '', status: 'Available', userLocation: 'Unassigned' });
+             }
+             setModalContent(content);
+             setShowModal(true);
+           };
 
-            const loadedUsersLocations = await fetchData('UsersLocations');
-            setUsersLocations(loadedUsersLocations);
-          } catch (err) {
-            setError(err.message);
-          }
-        };
-        loadData();
-      }, [setError]);
+           const modalContents = {
+             addRadar: (
+               <div>
+                 <h2 className="text-xl font-bold mb-4">Add Radar</h2>
+                 <input
+                   type="text"
+                   value={newRadar.name}
+                   onChange={(e) => {
+                     const value = e.target.value;
+                     setNewRadar(prev => ({ ...prev, name: value }));
+                   }}
+                   placeholder="Radar Name"
+                   className="border p-2 w-full mb-4 rounded-md"
+                 />
+                 <select
+                   value={newRadar.status}
+                   onChange={(e) => setNewRadar(prev => ({ ...prev, status: e.target.value }))}
+                   className="border p-2 w-full mb-4 rounded-md"
+                 >
+                   <option>Available</option>
+                   <option>Out of Order</option>
+                 </select>
+                 <select
+                   value={newRadar.userLocation}
+                   onChange={(e) => setNewRadar(prev => ({ ...prev, userLocation: e.target.value }))}
+                   className="border p-2 w-full mb-4 rounded-md"
+                 >
+                   <option>Unassigned</option>
+                   {usersLocations.map(ul => (
+                     <option key={ul.id} value={ul.name}>{ul.name}</option>
+                   ))}
+                 </select>
+                 <div className="flex justify-end space-x-2">
+                   <button
+                     onClick={() => {
+                       setNewRadar({ name: '', status: 'Available', userLocation: 'Unassigned' });
+                       setShowModal(false);
+                     }}
+                     className="bg-gray-500 text-white px-4 py-2 rounded hover:bg-gray-600"
+                   >
+                     Cancel
+                   </button>
+                   <button
+                     onClick={addRadar}
+                     className="bg-black text-white px-4 py-2 rounded hover:bg-lime-500"
+                   >
+                     Add
+                   </button>
+                 </div>
+               </div>
+             ),
+           };
 
-      const addRadar = async () => {
-        try {
-          if (newRadar.name && !radars.some(r => r.name === newRadar.name && r.director === director)) {
-            let finalUserLocation = newRadar.userLocation;
+           return (
+             <div className="min-h-screen flex flex-col">
+               <header className="bg-black text-white p-4 flex justify-between items-center">
+                 <img 
+                   src="https://fivetool.org/public/common-assets/img/logo-new.png" 
+                   alt="Five Tool Logo" 
+                   className="h-12"
+                 />
+                 <div className="flex items-center">
+                   <span className="mr-4">{director}</span>
+                   <button
+                     onClick={() => setDirector('')}
+                     className="bg-gray-500 px-2 py-1 rounded hover:bg-lime-500"
+                   >
+                     Change Director
+                   </button>
+                 </div>
+               </header>
+               <main className="flex-1 p-6 flex flex-col items-center">
+                 <div className="w-full max-w-md space-y-4">
+                   <button
+                     onClick={() => openModal(modalContents.addRadar, { newRadar: true })}
+                     className="bg-black text-white px-4 py-2 w-full rounded hover:bg-lime-500"
+                   >
+                     Add Radar
+                   </button>
+                   <button
+                     onClick={() => setShowRadars(!showRadars)}
+                     className="bg-gray-500 text-white px-4 py-2 w-full rounded hover:bg-lime-500"
+                   >
+                     {showRadars ? 'Hide Radars' : 'Show Radars'}
+                   </button>
+                   {showRadars && (
+                     <div className="mt-4 w-full">
+                       <h2 className="text-xl font-bold mb-2">Radars</h2>
+                       <table className="w-full border">
+                         <thead>
+                           <tr className="bg-gray-200">
+                             <th className="border p-2">Name</th>
+                             <th className="border p-2">Status</th>
+                             <th className="border p-2">User/Location</th>
+                           </tr>
+                         </thead>
+                         <tbody>
+                           {radars.filter(r => r.director === director).map(r => (
+                             <tr key={r.id}>
+                               <td className="border p-2">{r.name}</td>
+                               <td className="border p-2">{r.status}</td>
+                               <td className="border p-2">{r.userLocation}</td>
+                             </tr>
+                           ))}
+                         </tbody>
+                       </table>
+                     </div>
+                   )}
+                 </div>
+               </main>
+               {showModal && (
+                 <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center">
+                   <div className="bg-white p-6 rounded shadow-lg w-full max-w-md">
+                     {modalContent}
+                   </div>
+                 </div>
+               )}
+             </div>
+           );
+         };
 
-            if (addUserLocationMode && newUserLocationInRadar.name) {
-              const newUserLocationEntry = {
-                id: Date.now(),
-                name: newUserLocationInRadar.name,
-                type: newUserLocationInRadar.type,
-              };
-              const updatedUsersLocations = [...usersLocations, newUserLocationEntry];
-              await writeData('UsersLocations', updatedUsersLocations);
-              setUsersLocations(updatedUsersLocations);
-              finalUserLocation = newUserLocationInRadar.name;
-              setNewUserLocationInRadar({ name: '', type: 'Staff' });
-              setAddUserLocationMode(false);
-            }
+         const App = () => {
+           const [director, setDirector] = useState('');
+           const [directors, setDirectors] = useState([]);
+           const [error, setError] = useState(null);
 
-            const newRadarEntry = {
-              id: Date.now(),
-              name: newRadar.name,
-              status: newRadar.status,
-              userLocation: finalUserLocation,
-              director,
-            };
-            const updatedRadars = [...radars, newRadarEntry];
-            setRadars(updatedRadars);
-            await writeData('Radars', updatedRadars);
-            setNewRadar({ name: '', status: 'Available', userLocation: 'Unassigned' });
-            setShowModal(false);
-          } else {
-            alert('Radar name must be unique for this director.');
-          }
-        } catch (err) {
-          setError('Error adding radar: ' + err.message);
-        }
-      };
+           useEffect(() => {
+             const loadDirectors = async () => {
+               try {
+                 const loadedDirectors = await fetchData('Directors');
+                 if (loadedDirectors.length === 0) {
+                   loadedDirectors.push('Director A', 'Director B');
+                 }
+                 console.log('Loaded Directors:', loadedDirectors);
+                 setDirectors(loadedDirectors);
+               } catch (err) {
+                 setError(err.message);
+               }
+             };
+             loadDirectors();
+           }, []);
 
-      const addUserLocation = async () => {
-        try {
-          if (newUserLocation.name) {
-            const newUserLocationEntry = {
-              id: Date.now(),
-              name: newUserLocation.name,
-              type: newUserLocation.type,
-            };
-            const updatedUsersLocations = [...usersLocations, newUserLocationEntry];
-            setUsersLocations(updatedUsersLocations);
-            await writeData('UsersLocations', updatedUsersLocations);
-            setNewUserLocation({ name: '', type: 'Staff' });
-            setShowModal(false);
-          }
-        } catch (err) {
-          setError('Error adding user/location: ' + err.message);
-        }
-      };
+           return (
+             <ErrorBoundary>
+               {error && (
+                 <div className="text-red-500 p-4 text-center">
+                   {error}
+                   <button
+                     onClick={() => setError(null)}
+                     className="ml-4 text-blue-500 underline"
+                   >
+                     Dismiss
+                   </button>
+                 </div>
+               )}
+               {director ? (
+                 <DirectorPage 
+                   director={director} 
+                   setDirector={setDirector} 
+                   directors={directors} 
+                   setDirectors={setDirectors} 
+                   setError={setError}
+                 />
+               ) : (
+                 <HomePage 
+                   setDirector={setDirector} 
+                   directors={directors} 
+                   setDirectors={setDirectors} 
+                   setError={setError}
+                 />
+               )}
+             </ErrorBoundary>
+           );
+         };
 
-      const transferRadar = async () => {
-        try {
-          if (transfer.radar && transfer.to) {
-            const updatedRadars = radars.map(r => 
-              r.id === parseInt(transfer.radar) ? { ...r, userLocation: transfer.to } : r
-            );
-            setRadars(updatedRadars);
-            await writeData('Radars', updatedRadars);
-            setTransfer({ radar: '', to: '' });
-            setShowModal(false);
-          }
-        } catch (err) {
-          setError('Error transferring radar: ' + err.message);
-        }
-      };
-
-      const transferToDirector = async (radarId, newDirector) => {
-        try {
-          const updatedRadars = radars.map(r => 
-            r.id === radarId ? { ...r, director: newDirector } : r
-          );
-          setRadars(updatedRadars);
-          await writeData('Radars', updatedRadars);
-          setTransfer({ radar: '', to: '' });
-          setShowModal(false);
-        } catch (err) {
-          setError('Error transferring radar to director: ' + err.message);
-        }
-      };
-
-      const deleteItem = async (type, id) => {
-        try {
-          if (type === 'radar') {
-            const updatedRadars = radars.filter(r => r.id !== id);
-            setRadars(updatedRadars);
-            await writeData('Radars', updatedRadars);
-          } else {
-            const updatedUsersLocations = usersLocations.filter(ul => ul.id !== id);
-            setUsersLocations(updatedUsersLocations);
-            await writeData('UsersLocations', updatedUsersLocations);
-          }
-          setTransfer({ radar: '', to: '' });
-          setShowModal(false);
-        } catch (err) {
-          setError('Error deleting item: ' + err.message);
-        }
-      };
-
-      const editRadar = async (id, updatedRadar) => {
-        try {
-          const updatedRadars = radars.map(r => r.id === id ? { ...updatedRadar, id, director } : r);
-          setRadars(updatedRadars);
-          await writeData('Radars', updatedRadars);
-          setEditingRadar(null);
-          setShowModal(false);
-        } catch (err) {
-          setError('Error editing radar: ' + err.message);
-        }
-      };
-
-      const deleteDirector = async () => {
-        try {
-          const updatedDirectors = directors.filter(d => d !== director);
-          setDirectors(updatedDirectors);
-          await writeData('Directors', updatedDirectors);
-          const updatedRadars = radars.filter(r => r.director !== director);
-          setRadars(updatedRadars);
-          await writeData('Radars', updatedRadars);
-          setDirector('');
-          setShowDeleteDirector(false);
-        } catch (err) {
-          setError('Error deleting director: ' + err.message);
-        }
-      };
-
-      const openModal = (content, resetState = {}) => {
-        if (resetState.newRadar) {
-          setNewRadar({ name: '', status: 'Available', userLocation: 'Unassigned' });
-          setAddUserLocationMode(false);
-          setNewUserLocationInRadar({ name: '', type: 'Staff' });
-        }
-        if (resetState.newUserLocation) {
-          setNewUserLocation({ name: '', type: 'Staff' });
-        }
-        if (resetState.transfer) {
-          setTransfer({ radar: '', to: '', type: '' });
-        }
-        if (resetState.editingRadar) {
-          setEditingRadar(resetState.editingRadar);
-        }
-        setModalContent(content);
-        setShowModal(true);
-      };
-
-      const modalContents = {
-        addRadar: (
-          <div>
-            <h2 className="text-xl font-bold mb-4">Add Radar</h2>
-            <input
-              type="text"
-              value={newRadar.name}
-              onChange={(e) => {
-                const value = e.target.value;
-                console.log('Radar Name Input:', value);
-                setNewRadar({ ...newRadar, name: value });
-              }}
-              placeholder="Radar Name"
-              className="border p-2 w-full mb-4 rounded-md"
-            />
-            <select
-              value={newRadar.status}
-              onChange={(e) => setNewRadar(prev => ({ ...prev, status: e.target.value }))}
-              className="border p-2 w-full mb-4 rounded-md"
-            >
-              <option>Available</option>
-              <option>Out of Order</option>
-            </select>
-            <div className="mb-4">
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                User/Location
-              </label>
-              <div className="flex items-center mb-2">
-                <input
-                  type="checkbox"
-                  checked={addUserLocationMode}
-                  onChange={(e) => setAddUserLocationMode(e.target.checked)}
-                  className="mr-2"
-                />
-                <span>Add New User/Location</span>
-              </div>
-              {addUserLocationMode ? (
-                <div>
-                  <input
-                    type="text"
-                    value={newUserLocationInRadar.name}
-                    onChange={(e) => {
-                      console.log('New User/Location Name Input (Radar Modal):', e.target.value);
-                      setNewUserLocationInRadar({ ...newUserLocationInRadar, name: e.target.value });
-                    }}
-                    placeholder="New User/Location Name"
-                    className="border p-2 w-full mb-2 rounded-md"
-                  />
-                  <select
-                    value={newUserLocationInRadar.type}
-                    onChange={(e) => setNewUserLocationInRadar(prev => ({ ...prev, type: e.target.value }))}
-                    className="border p-2 w-full rounded-md"
-                  >
-                    <option>Staff</option>
-                    <option>Location</option>
-                  </select>
-                </div>
-              ) : (
-                <select
-                  value={newRadar.userLocation}
-                  onChange={(e) => setNewRadar(prev => ({ ...prev, userLocation: e.target.value }))}
-                  className="border p-2 w-full rounded-md"
-                >
-                  <option>Unassigned</option>
-                  {usersLocations.map(ul => (
-                    <option key={ul.id} value={ul.name}>{ul.name}</option>
-                  ))}
-                </select>
-              )}
-            </div>
-            <div className="flex justify-end space-x-2">
-              <button
-                onClick={() => {
-                  setNewRadar({ name: '', status: 'Available', userLocation: 'Unassigned' });
-                  setAddUserLocationMode(false);
-                  setNewUserLocationInRadar({ name: '', type: 'Staff' });
-                  setShowModal(false);
-                }}
-                className="bg-gray-500 text-white px-4 py-2 rounded hover:bg-gray-600"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={addRadar}
-                className="bg-black text-white px-4 py-2 rounded hover:bg-lime-500"
-              >
-                Add
-              </button>
-            </div>
-          </div>
-        ),
-        addUserLocation: (
-          <div>
-            <h2 className="text-xl font-bold mb-4">Add User/Location</h2>
-            <input
-              type="text"
-              value={newUserLocation.name}
-              onChange={(e) => {
-                console.log('User/Location Name Input:', e.target.value);
-                setNewUserLocation({ ...newUserLocation, name: e.target.value });
-              }}
-              placeholder="Name"
-              className="border p-2 w-full mb-4 rounded-md"
-            />
-            <select
-              value={newUserLocation.type}
-              onChange={(e) => setNewUserLocation(prev => ({ ...prev, type: e.target.value }))}
-              className="border p-2 w-full mb-4 rounded-md"
-            >
-              <option>Staff</option>
-              <option>Location</option>
-            </select>
-            <div className="flex justify-end space-x-2">
-              <button
-                onClick={() => {
-                  setNewUserLocation({ name: '', type: 'Staff' });
-                  setShowModal(false);
-                }}
-                className="bg-gray-500 text-white px-4 py-2 rounded hover:bg-gray-600"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={addUserLocation}
-                className="bg-black text-white px-4 py-2 rounded hover:bg-lime-500"
-              >
-                Add
-              </button>
-            </div>
-          </div>
-        ),
-        transferRadar: (
-          <div>
-            <h2 className="text-xl font-bold mb-4">Transfer Radar</h2>
-            <select
-              value={transfer.radar}
-              onChange={(e) => setTransfer(prev => ({ ...prev, radar: e.target.value }))}
-              className="border p-2 w-full mb-4 rounded-md"
-            >
-              <option value="">Select Radar</option>
-              {radars.filter(r => r.director === director).map(r => (
-                <option key={r.id} value={r.id}>{r.name} ({r.userLocation})</option>
-              ))}
-            </select>
-            <select
-              value={transfer.to}
-              onChange={(e) => setTransfer(prev => ({ ...prev, to: e.target.value }))}
-              className="border p-2 w-full mb-4 rounded-md"
-            >
-              <option value="">Select User/Location</option>
-              {usersLocations.map(ul => (
-                <option key={ul.id} value={ul.name}>{ul.name}</option>
-              ))}
-            </select>
-            <div className="flex justify-end space-x-2">
-              <button
-                onClick={() => {
-                  setTransfer({ radar: '', to: '' });
-                  setShowModal(false);
-                }}
-                className="bg-gray-500 text-white px-4 py-2 rounded hover:bg-gray-600"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={transferRadar}
-                className="bg-black text-white px-4 py-2 rounded hover:bg-lime-500"
-              >
-                Transfer
-              </button>
-            </div>
-          </div>
-        ),
-        transferToDirector: (
-          <div>
-            <h2 className="text-xl font-bold mb-4">Transfer Radar to Director</h2>
-            <input
-              type="text"
-              value={transfer.radar}
-              onChange={(e) => {
-                console.log('Radar ID Input:', e.target.value);
-                setTransfer({ ...transfer, radar: e.target.value });
-              }}
-              placeholder="Radar ID"
-              className="border p-2 w-full mb-4 rounded-md"
-            />
-            <input
-              type="text"
-              value={transfer.to}
-              onChange={(e) => {
-                console.log('New Director Input:', e.target.value);
-                setTransfer({ ...transfer, to: e.target.value });
-              }}
-              placeholder="New Director"
-              className="border p-2 w-full mb-4 rounded-md"
-            />
-            <div className="flex justify-end space-x-2">
-              <button
-                onClick={() => {
-                  setTransfer({ radar: '', to: '' });
-                  setShowModal(false);
-                }}
-                className="bg-gray-500 text-white px-4 py-2 rounded hover:bg-gray-600"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => {
-                  if (transfer.radar && transfer.to) {
-                    transferToDirector(parseInt(transfer.radar), transfer.to);
-                  }
-                }}
-                className="bg-black text-white px-4 py-2 rounded hover:bg-lime-500"
-              >
-                Transfer
-              </button>
-            </div>
-          </div>
-        ),
-        deleteItem: (
-          <div>
-            <h2 className="text-xl font-bold mb-4">Delete Item</h2>
-            <select
-              value={transfer.type || ''}
-              onChange={(e) => setTransfer(prev => ({ ...prev, type: e.target.value }))}
-              className="border p-2 w-full mb-4 rounded-md"
-            >
-              <option value="">Select Type</option>
-              <option value="radar">Radar</option>
-              <option value="user">User/Location</option>
-            </select>
-            <input
-              type="text"
-              value={transfer.id || ''}
-              onChange={(e) => {
-                console.log('Item ID Input:', e.target.value);
-                setTransfer({ ...transfer, id: e.target.value });
-              }}
-              placeholder="Item ID"
-              className="border p-2 w-full mb-4 rounded-md"
-            />
-            <div className="flex justify-end space-x-2">
-              <button
-                onClick={() => {
-                  setTransfer({ radar: '', to: '' });
-                  setShowModal(false);
-                }}
-                className="bg-gray-500 text-white px-4 py-2 rounded hover:bg-gray-600"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => {
-                  if (transfer.type && transfer.id) {
-                    deleteItem(transfer.type, parseInt(transfer.id));
-                  }
-                }}
-                className="bg-red-500 text-white px-4 py-2 rounded hover:bg-lime-500"
-              >
-                Delete
-              </button>
-            </div>
-          </div>
-        ),
-        editRadar: (radar) => (
-          <div>
-            <h2 className="text-xl font-bold mb-4">Edit Radar</h2>
-            <input
-              type="text"
-              value={editingRadar?.name || radar.name}
-              onChange={(e) => {
-                console.log('Edit Radar Name Input:', e.target.value);
-                setEditingRadar({ ...editingRadar, name: e.target.value });
-              }}
-              placeholder="Radar Name"
-              className="border p-2 w-full mb-4 rounded-md"
-            />
-            <select
-              value={editingRadar?.status || radar.status}
-              onChange={(e) => setEditingRadar(prev => ({ ...prev, status: e.target.value }))}
-              className="border p-2 w-full mb-4 rounded-md"
-            >
-              <option>Available</option>
-              <option>Out of Order</option>
-            </select>
-            <select
-              value={editingRadar?.userLocation || radar.userLocation}
-              onChange={(e) => setEditingRadar(prev => ({ ...prev, userLocation: e.target.value }))}
-              className="border p-2 w-full mb-4 rounded-md"
-            >
-              <option>Unassigned</option>
-              {usersLocations.map(ul => (
-                <option key={ul.id} value={ul.name}>{ul.name}</option>
-              ))}
-            </select>
-            <div className="flex justify-end space-x-2">
-              <button
-                onClick={() => {
-                  setEditingRadar(null);
-                  setShowModal(false);
-                }}
-                className="bg-gray-500 text-white px-4 py-2 rounded hover:bg-gray-600"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => {
-                  if (editingRadar) {
-                    editRadar(radar.id, editingRadar);
-                  }
-                }}
-                className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-lime-500"
-              >
-                Save
-              </button>
-            </div>
-          </div>
-        ),
-      };
-
-      return (
-        <div className="min-h-screen flex flex-col">
-          <header className="bg-black text-white p-4 flex justify-between items-center">
-            <img 
-              src="https://fivetool.org/public/common-assets/img/logo-new.png" 
-              alt="Five Tool Logo" 
-              className="h-12"
-            />
-            <div className="flex items-center">
-              <button
-                onClick={() => setShowDeleteDirector(true)}
-                className="mr-4 text-white hover:text-lime-500"
-              >
-                {director}
-              </button>
-              <button
-                onClick={() => setDirector('')}
-                className="bg-gray-500 px-2 py-1 rounded hover:bg-lime-500"
-              >
-                Change Director
-              </button>
-            </div>
-          </header>
-          <main className="flex-1 p-6 flex flex-col items-center">
-            <div className="w-full max-w-md space-y-4">
-              <button
-                onClick={() => openModal(modalContents.addRadar, { newRadar: true })}
-                className="bg-black text-white px-4 py-2 w-full rounded hover:bg-lime-500"
-              >
-                Add Radar
-              </button>
-              <button
-                onClick={() => openModal(modalContents.addUserLocation, { newUserLocation: true })}
-                className="bg-black text-white px-4 py-2 w-full rounded hover:bg-lime-500"
-              >
-                Add User/Location
-              </button>
-              <button
-                onClick={() => openModal(modalContents.transferRadar, { transfer: true })}
-                className="bg-black text-white px-4 py-2 w-full rounded hover:bg-lime-500"
-              >
-                Transfer Radar
-              </button>
-              <button
-                onClick={() => setShowRadars(!showRadars)}
-                className="bg-gray-500 text-white px-4 py-2 w-full rounded hover:bg-lime-500"
-              >
-                {showRadars ? 'Hide Radars' : 'Show Radars'}
-              </button>
-              {showRadars && (
-                <div className="mt-4 w-full">
-                  <h2 className="text-xl font-bold mb-2">Radars</h2>
-                  <table className="w-full border">
-                    <thead>
-                      <tr className="bg-gray-200">
-                        <th className="border p-2">Name</th>
-                        <th className="border p-2">Status</th>
-                        <th className="border p-2">User/Location</th>
-                        <th className="border p-2">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {radars.filter(r => r.director === director).map(r => (
-                        <tr key={r.id}>
-                          <td className="border p-2">{r.name}</td>
-                          <td className="border p-2">{r.status}</td>
-                          <td className="border p-2">{r.userLocation}</td>
-                          <td className="border p-2">
-                            <button
-                              onClick={() => openModal(modalContents.editRadar(r), { editingRadar: { name: r.name, status: r.status, userLocation: r.userLocation } })}
-                              className="bg-blue-500 text-white px-2 py-1 rounded mr-2"
-                            >
-                              Edit
-                            </button>
-                            <button
-                              onClick={() => deleteItem('radar', r.id)}
-                              className="bg-red-500 text-white px-2 py-1 rounded"
-                            >
-                              Delete
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          </main>
-          <footer className="bg-gray-100 p-4 flex justify-end">
-            <div>
-              <button
-                onClick={() => openModal(modalContents.transferToDirector, { transfer: true })}
-                className="bg-black text-white px-4 py-2 rounded hover:bg-lime-500 mr-2"
-              >
-                Transfer Radar to Director
-              </button>
-              <button
-                onClick={() => openModal(modalContents.deleteItem, { transfer: true })}
-                className="bg-red-500 text-white px-4 py-2 rounded hover:bg-lime-500"
-              >
-                Delete Item
-              </button>
-            </div>
-          </footer>
-          {showModal && (
-            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center">
-              <div className="bg-white p-6 rounded shadow-lg w-full max-w-md">
-                {modalContent}
-              </div>
-            </div>
-          )}
-          {showDeleteDirector && (
-            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center">
-              <div className="bg-white p-6 rounded shadow-lg w-full max-w-md">
-                <h2 className="text-xl font-bold mb-4">Delete Director</h2>
-                <p className="mb-4">Are you sure you want to delete {director}? This will remove all associated radars.</p>
-                <div className="flex justify-end space-x-2">
-                  <button
-                    onClick={() => setShowDeleteDirector(false)}
-                    className="bg-gray-500 text-white px-4 py-2 rounded hover:bg-gray-600"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={deleteDirector}
-                    className="bg-red-500 text-white px-4 py-2 rounded hover:bg-lime-500"
-                  >
-                    Delete
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      );
-    };
-
-    const App = () => {
-      const [director, setDirector] = useState('');
-      const [directors, setDirectors] = useState([]);
-      const [error, setError] = useState(null);
-
-      useEffect(() => {
-        const loadDirectors = async () => {
-          try {
-            const loadedDirectors = await fetchData('Directors');
-            if (loadedDirectors.length === 0) {
-              loadedDirectors.push('Director A', 'Director B');
-            }
-            console.log('Loaded Directors:', loadedDirectors);
-            setDirectors(loadedDirectors);
-          } catch (err) {
-            setError(err.message);
-          }
-        };
-        loadDirectors();
-      }, []);
-
-      return (
-        <ErrorBoundary>
-          {error && (
-            <div className="text-red-500 p-4 text-center">
-              {error}
-              <button
-                onClick={() => setError(null)}
-                className="ml-4 text-blue-500 underline"
-              >
-                Dismiss
-              </button>
-            </div>
-          )}
-          {director ? (
-            <DirectorPage 
-              director={director} 
-              setDirector={setDirector} 
-              directors={directors} 
-              setDirectors={setDirectors} 
-              setError={setError}
-            />
-          ) : (
-            <HomePage 
-              setDirector={setDirector} 
-              directors={directors} 
-              setDirectors={setDirectors} 
-              setError={setError}
-            />
-          )}
-        </ErrorBoundary>
-      );
-    };
-
-    const root = ReactDOM.createRoot(document.getElementById('root'));
-    root.render(<App />);
-  </script>
-</body>
-</html>
+         const root = ReactDOM.createRoot(document.getElementById('root'));
+         root.render(<App />);
+       </script>
+     </body>
+     </html>
