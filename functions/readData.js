@@ -4,6 +4,9 @@ const base = new Airtable({ apiKey: process.env.AIRTABLE_API_KEY }).base(process
 
 exports.handler = async function(event, context) {
   try {
+    // Log the event for debugging
+    console.log('Event received:', event);
+
     // Check if event.body is defined and not empty
     if (!event.body) {
       console.error('No request body provided');
@@ -60,3 +63,5 @@ exports.handler = async function(event, context) {
     };
   }
 };
+
+
