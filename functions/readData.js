@@ -4,7 +4,25 @@ const base = new Airtable({ apiKey: process.env.AIRTABLE_API_KEY }).base(process
 
 exports.handler = async function(event, context) {
   try {
+    // Check if event.body is defined and not empty
+    if (!event.body) {
+      console.error('No request body provided');
+      return {
+        statusCode: 400,
+        body: JSON.stringify({ error: 'No request body provided' }),
+      };
+    }
+
+    // Parse the request body
     const { sheet } = JSON.parse(event.body);
+    if (!sheet) {
+      console.error('Sheet parameter is missing in request body');
+      return {
+        statusCode: 400,
+        body: JSON.stringify({ error: 'Sheet parameter is missing in request body' }),
+      };
+    }
+
     const tableMap = {
       'Directors': 'Directors',
       'Radars': 'Radars',
@@ -13,6 +31,7 @@ exports.handler = async function(event, context) {
 
     const tableName = tableMap[sheet];
     if (!tableName) {
+      console.error('Invalid sheet name:', sheet);
       return {
         statusCode: 400,
         body: JSON.stringify({ error: 'Invalid sheet name' }),
